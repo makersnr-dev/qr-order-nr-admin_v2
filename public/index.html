@@ -1,0 +1,205 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>관리자 콘솔</title>
+<style>
+  :root{--bg:#0b0f14;--panel:#0d131b;--line:#223;--text:#e6edf3;--muted:#9fb0c3}
+  body{font-family:system-ui,Noto Sans KR,sans-serif;background:var(--bg);color:var(--text);margin:0}
+  .wrap{max-width:980px;margin:22px auto;padding:16px}
+  .tabs{display:flex;gap:8px;margin-bottom:12px}
+  .tab{padding:10px 14px;border:1px solid #294760;border-radius:10px;background:#0c1a28;cursor:pointer}
+  .tab.active{outline:2px solid #2a6ea9}
+  .card{background:#0d131b;border:1px solid #223;border-radius:14px;padding:14px;margin-bottom:14px}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .btn{padding:8px 12px;border:1px solid #294760;border-radius:10px;background:linear-gradient(180deg,#0d2233,#0a1824);color:#e6edf3;cursor:pointer}
+  input,select{padding:8px;border-radius:10px;border:1px solid #223;background:#0e1520;color:#e6edf3}
+  table{width:100%;border-collapse:collapse} th,td{border-bottom:1px solid #222;padding:8px;text-align:left}
+  .pill{display:inline-block;padding:4px 8px;border-radius:24px;border:1px solid #345;font-size:12px}
+  .pill.ok{background:#0b2a18;border-color:#1f4e32;color:#b3ffcf}
+  .pill.warn{background:#2a160b;border-color:#4e331f;color:#ffd9b3}
+  .muted{color:var(--muted)} .hidden{display:none}
+</style>
+</head><body>
+<div class="wrap">
+  <div class="row" style="justify-content:space-between">
+    <h2>관리자 콘솔</h2>
+    <div class="row">
+      <a class="btn" href="/login">로그인</a>
+      <button class="btn" id="logoutBtn">로그아웃</button>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="orders">주문목록</div>
+    <div class="tab" data-tab="qr">QR 배포</div>
+    <div class="tab" data-tab="menu">메뉴 관리</div>
+    <div class="tab" data-tab="code">결제 코드</div>
+  </div>
+
+  <div id="pane-orders" class="card">
+    <div class="row" style="justify-content:space-between">
+      <div><b>주문목록</b></div>
+      <button class="btn" id="exportOrders">엑셀 다운로드</button>
+    </div>
+    <table id="ordersTbl"><thead><tr><th>시간</th><th>테이블</th><th>항목</th><th>금액</th><th>상태</th></tr></thead><tbody></tbody></table>
+  </div>
+
+  <div id="pane-qr" class="card hidden">
+    <div class="row"><input id="qrTable" placeholder="테이블 번호"/> <button class="btn" id="makeQR">QR 생성</button> <a id="dlPng" class="btn" href="#" download="qr.png">PNG 다운로드</a></div>
+    <div style="margin-top:10px"><img id="qrImg" style="background:#fff;border-radius:8px"/></div>
+  </div>
+
+  <div id="pane-menu" class="card hidden">
+    <div class="row"><input id="m_id" placeholder="id"/><input id="m_name" placeholder="이름"/><input id="m_price" placeholder="가격" type="number"/><button class="btn" id="m_add">추가</button></div>
+    <table id="menuTbl"><thead><tr><th>ID</th><th>이름</th><th>가격</th><th>활성</th><th>동작</th></tr></thead><tbody></tbody></table>
+    <div class="row" style="margin-top:10px"><input type="file" id="xlsxFile"/><button class="btn" id="m_upload">엑셀 업로드</button></div>
+  </div>
+
+  <div id="pane-code" class="card hidden">
+    <div class="row">
+      <div>오늘의 결제 코드 <span id="dcDate" class="muted"></span></div>
+      <span id="dcStatus" class="pill"></span>
+      <span id="dcRemain" class="muted"></span>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <input id="dcCode" style="width:140px" readonly>
+      <button class="btn" id="copyBtn">복사</button>
+      <button class="btn" id="regenBtn">새 코드 발급</button>
+      <button class="btn" id="clearBtn">기본 코드로 되돌리기</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let API='', ORDER_BASE='', TOKEN=localStorage.getItem('adminToken')||'';
+function authHeaders(){ return { 'Content-Type':'application/json', 'Authorization':'Bearer '+TOKEN }; }
+function api(p){ return API + p; }
+function setTabActive(name){
+  document.querySelectorAll('.tab').forEach(t=> t.classList.remove('active'));
+  document.querySelector(`.tab[data-tab="${name}"]`).classList.add('active');
+  document.querySelectorAll('[id^=pane-]').forEach(p=> p.classList.add('hidden'));
+  document.getElementById('pane-'+name).classList.remove('hidden');
+}
+// tabs
+document.querySelectorAll('.tab').forEach(t=> t.onclick=()=> setTabActive(t.dataset.tab));
+
+document.getElementById('logoutBtn').onclick = ()=>{ localStorage.removeItem('adminToken'); TOKEN=''; location.href='/login'; };
+
+async function init(){
+  const r=await fetch('/admin-config'); const j=await r.json(); API=j.apiBase; ORDER_BASE=j.orderBase;
+  if(!TOKEN){ /* not logged in: don't alert/pop; keep UI idle */ return; }
+  // After login only: load data. Failures are shown minimally or silently.
+  try{ await Promise.all([loadOrders(), loadMenu(), loadDailyCode()]); }catch(e){ console.warn('initial load error', e); }
+}
+
+// Orders
+const ordersTbody = document.querySelector('#ordersTbl tbody');
+let MENU_CACHE=[];
+
+let ADMIN_CLEARED = new Set();
+async function loadClears(){ try{ const r=await fetch('/adb/clears'); const j=await r.json(); ADMIN_CLEARED = new Set(j.cleared||[]); }catch(_){ ADMIN_CLEARED = new Set(); } }
+
+function nameById(id){ const m=MENU_CACHE.find(x=>x.id===id); return m?m.name:id; }
+function rowHtml(o){
+  const items=(o.items||[]).map(([id,q])=>`${nameById(id)} x ${q}`).join(', ');
+  return `<tr data-id="${o.id}"><td>${o.createdAt||''}</td><td>${o.tableNo||''}</td><td>${items}</td><td>${(o.amount||0).toLocaleString('ko-KR')}</td><td><select class='statusSel'><option>접수</option><option>준비중</option><option>완료</option><option>주문취소</option><option>환불</option></select> <button class='btn refundBtn'>환불</button> <button class='btn hideBtn'>지우기</button></td></tr>`;
+}
+x ${q}`).join(', '); return `<tr><td>${o.createdAt||''}</td><td>${o.tableNo||''}</td><td>${items}</td><td>${(o.amount||0).toLocaleString('ko-KR')}</td><td>${o.status||''}</td></tr>`; }
+async function loadOrders(){ await fetch('/adb/sync/orders',{method:'POST'}); const r=await fetch('/adb/orders?includeCleared=1'); if(!r.ok) return; const arr=await r.json(); ordersTbody.innerHTML=arr.map(rowHtml).join(''); }
+(function sse(){ try{ const es=new EventSource(api('/events/orders')); es.addEventListener('order', e=>{ loadOrders(); }); }catch(_){ /* fallback by timer, but silent */ setInterval(loadOrders,15000); } })();
+document.getElementById('exportOrders').onclick = ()=>{ if(!TOKEN){ location.href='/login'; return; } window.location.href = api('/export/orders.xlsx')+'?token='+TOKEN; };
+
+// QR (ORDER_BASE/?table=)
+document.getElementById('makeQR').onclick = ()=>{
+  if(!TOKEN){ location.href='/login'; return; }
+  const t=document.getElementById('qrTable').value||'';
+  const link = ORDER_BASE + '/?table=' + encodeURIComponent(t);
+  const apiQR = api('/qr?size=220x220&data='+encodeURIComponent(link));
+  document.getElementById('qrImg').src = apiQR; document.getElementById('dlPng').href = apiQR;
+};
+
+// Menu (edit/save/delete/add)
+const menuTbody = document.querySelector('#menuTbl tbody');
+async function loadMenu(){ const r=await fetch('/adb/menu'); if(!r.ok) return; const arr=await r.json(); MENU_CACHE=arr; menuTbody.innerHTML = arr.map(trHtml).join(''); }
+function trHtml(m){
+  return `<tr data-id="${m.id}">
+    <td>${m.id}</td>
+    <td><input value="${m.name||''}" class="m_name"></td>
+    <td><input type="number" value="${m.price||0}" class="m_price" style="width:100px"></td>
+    <td><input type="checkbox" class="m_active" ${m.active?'checked':''}></td>
+    <td>
+      <button class="btn m_save">저장</button>
+      <button class="btn m_del">삭제</button>
+    </td>
+  </tr>`;
+}
+menuTbody.addEventListener('click', async (e)=>{
+  const tr = e.target.closest('tr'); if(!tr) return;
+  const id = tr.getAttribute('data-id');
+  if(e.target.classList.contains('m_save')){
+    if(!TOKEN){ location.href='/login'; return; }
+    const name = tr.querySelector('.m_name').value.trim();
+    const price = Number(tr.querySelector('.m_price').value||0);
+    const active = tr.querySelector('.m_active').checked;
+    const r = await fetch(api('/menu/'+encodeURIComponent(id)), { method:'PATCH', headers: authHeaders(), body: JSON.stringify({ name, price, active }) });
+    if(!r.ok){ alert('저장 실패'); return; }
+  }
+  if(e.target.classList.contains('m_del')){
+    if(!TOKEN){ location.href='/login'; return; }
+    if(!confirm('삭제할까요?')) return;
+    const r = await fetch(api('/menu/'+encodeURIComponent(id)), { method:'DELETE', headers: authHeaders() });
+    if(!r.ok){ alert('삭제 실패'); return; }
+    await loadMenu();
+  }
+});
+document.getElementById('m_add').onclick = async ()=>{
+  if(!TOKEN){ location.href='/login'; return; }
+  const id=m_id.value.trim(), name=m_name.value.trim(), price=Number(m_price.value||0);
+  if(!id || !name || !price){ alert('id, 이름, 가격을 입력해 주세요'); return; }
+  const r=await fetch('/adb/menu', { method:'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify({ id,name,price,active:true }) });
+  if(!r.ok){ const t=await r.text(); alert('추가 실패: '+t); return; }
+  m_id.value=''; m_name.value=''; m_price.value=''; await loadMenu();
+};
+
+// Excel upload
+document.getElementById('m_upload').onclick = async ()=>{
+  if(!TOKEN){ location.href='/login'; return; }
+  const f=document.getElementById('xlsxFile').files[0]; if(!f){ alert('파일 선택'); return; }
+  const fd=new FormData(); fd.append('file', f);
+  const r=await fetch(api('/import/menu'), { method:'POST', headers:{ 'Authorization': 'Bearer '+TOKEN }, body: fd });
+  if(!r.ok){ alert('업로드 실패'); return; }
+  await loadMenu();
+};
+
+// Daily Code (silent errors)
+function untilMidnightText(){ const now=new Date(); const end=new Date(now); end.setHours(24,0,0,0); const ms=end-now; const h=Math.floor(ms/3600000); const m=Math.floor((ms%3600000)/60000); return `자정까지 ${h}시간 ${m}분`; }
+function updateRemain(){ const el=document.getElementById('dcRemain'); if(el) el.textContent = untilMidnightText(); }
+setInterval(updateRemain, 60000);
+async function loadDailyCode(){
+  if(!TOKEN) return;
+  try{
+    const r=await fetch('/adb/daily-code');
+    if(!r.ok) return; // silent
+    const j=await r.json();
+    dcDate.textContent='('+j.date+')'; dcCode.value=j.code;
+    dcStatus.textContent=j.override?'오버라이드(오늘만)':'기본 코드'; dcStatus.className='pill '+(j.override?'warn':'ok');
+    updateRemain();
+  }catch(e){ /* silent */ }
+}
+regenBtn.onclick = async ()=>{ if(!TOKEN){ location.href='/login'; return; } const r=await fetch('/adb/daily-code/regen', { method:'POST' }); if(r.ok){ await loadDailyCode(); alert('오늘의 새 코드가 발급되었습니다.'); } };
+clearBtn.onclick = async ()=>{ if(!TOKEN){ location.href='/login'; return; } const r=await fetch('/adb/daily-code/clear', { method:'POST' }); if(r.ok){ await loadDailyCode(); alert('기본 코드로 되돌렸습니다.'); } };
+copyBtn.onclick = ()=>{ if(!TOKEN){ location.href='/login'; return; } navigator.clipboard?.writeText(dcCode.value).then(()=> alert('복사되었습니다.')); };
+
+init();
+
+async function renderQrHistory(){
+  try{
+    const r=await fetch('/adb/qr-history'); if(!r.ok) return;
+    const arr=await r.json();
+    const box=document.getElementById('qrHistory');
+    box.innerHTML = arr.map(x=>`<div class='row'><img src='${x.url}' style='width:64px;height:64px;background:#fff;border-radius:6px'><a class='btn' href='${x.url}' download>다운로드</a><span class='muted'>${new Date(x.created_at).toLocaleString('ko-KR')}</span></div>`).join('') || '<div class="muted">기록 없음</div>';
+  }catch(e){}
+}
+renderQrHistory();
+
+</script>
+</body></html>

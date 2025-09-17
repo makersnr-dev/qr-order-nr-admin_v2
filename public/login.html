@@ -1,0 +1,39 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>관리자 로그인</title>
+<style>
+  :root{--bg:#0b0f14;--panel:#0d131b;--line:#223;--text:#e6edf3;--muted:#9fb0c3}
+  body{font-family:system-ui,Noto Sans KR,sans-serif;background:var(--bg);color:var(--text);margin:0;display:flex;min-height:100vh;align-items:center;justify-content:center}
+  .panel{background:#0d131b;border:1px solid #223;border-radius:14px;padding:18px;min-width:320px}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .btn{padding:10px 14px;border:1px solid #294760;border-radius:10px;background:linear-gradient(180deg,#0d2233,#0a1824);color:#e6edf3;cursor:pointer}
+  input{padding:10px;border-radius:10px;border:1px solid #223;background:#0e1520;color:#e6edf3;width:100%}
+  .muted{color:#9fb0c3}
+</style>
+</head><body>
+<div class="panel">
+  <h2 style="margin:6px 0 12px">관리자 로그인</h2>
+  <div class="row" style="width:100%">
+    <input id="password" type="password" placeholder="비밀번호"/>
+  </div>
+  <div class="row" style="margin-top:10px;justify-content:space-between">
+    <button class="btn" id="loginBtn">로그인</button>
+    <a class="muted" href="/">관리자 홈</a>
+  </div>
+  <div id="msg" class="muted" style="margin-top:8px"></div>
+</div>
+<script>
+let API='';
+async function init(){ const r=await fetch('/admin-config'); const j=await r.json(); API=j.apiBase; }
+document.getElementById('loginBtn').onclick = async ()=>{
+  try{
+    const pw=document.getElementById('password').value||'';
+    const r=await fetch(API+'/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
+    if(!r.ok){ document.getElementById('msg').textContent='로그인 실패'; return; }
+    const j=await r.json(); localStorage.setItem('adminToken', j.token);
+    location.href='/';
+  }catch(e){ document.getElementById('msg').textContent='오류: '+(e?.message||e); }
+};
+init();
+</script>
+</body></html>
