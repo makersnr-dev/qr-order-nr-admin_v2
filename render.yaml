@@ -1,0 +1,21 @@
+# render.yaml (ADMIN repo) — v15.13 with PostgreSQL (Free)
+services:
+  - type: web
+    name: qr-order-admin
+    env: node
+    buildCommand: npm install
+    startCommand: node admin_server.js
+    autoDeploy: true
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # === Fill with your actual values ===
+      - key: API_BASE
+        value: https://<ORDER_API_DOMAIN>          # e.g., https://qr-order-api-xxxx.onrender.com
+      - key: ORDER_BASE
+        value: https://<ORDER_PAGE_DOMAIN>         # often same as API_BASE
+      - key: ADMIN_PASSWORD
+        value: <SAME_AS_API_ADMIN_PASSWORD>        # must match API service
+      - key: DATABASE_URL
+        value: <RENDER_POSTGRES_EXTERNAL_URL>      # paste External Database URL here
